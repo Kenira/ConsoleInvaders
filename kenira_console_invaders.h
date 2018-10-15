@@ -3,18 +3,14 @@
 
 
 // TODO:
-// - continue button at level end screen (that fades in after certain time?)
-// - charged shots hud
+// - ECS
 // - replay level buttons
 // - buttons to continue after game won / reset after lost
 // - menu tree (map)
-// - fix delayed shot in menus
 // - type and current_level are same
 // - better level advance system
 // - consolidate drawing text and spawning menu item, just change the collision
 // - flexible positions for menu items, depending on window size
-// - refactor: level object
-// - make upgrade menu it's own level
 // - check for min, max values for upgrades (not even spawn upgrades?)
 // - fixed upgrade points per level, you can redo a level (risk of losing live vs. chance to get more upgrades)
 // - unlock shield after achieving something (finish level 2 without damage? finish level 3 in general?)
@@ -37,7 +33,7 @@ constexpr int CI_TYPE_PROJECTILE = 2;
 constexpr int CI_TYPE_TEXT = 5;
 constexpr int CI_TYPE_ND = 9;
 constexpr int CI_TYPE_PLAYER = 100;
-constexpr int CI_TYPE_ALIEN_BASIC = 200;		// 100 and greater for alien types (so you can check for type >= _BASIC_ALIEN to see if it's an enemy)
+constexpr int CI_TYPE_ALIEN_BASIC = 200;		// this and greater for alien types (so you can check for type >= _BASIC_ALIEN to see if it's an enemy)
 constexpr int CI_TYPE_ALIEN_ADVANCED = 201;
 constexpr int CI_TYPE_ALIEN_ELITE = 202;
 
@@ -78,6 +74,11 @@ constexpr int CI_LEVEL_03 = 82;
 constexpr int CI_LEVEL_04 = 83;
 constexpr int CI_LEVEL_05 = 84;
 
+constexpr int HEALTH_PLAYER_DEFAULT = 5;
+constexpr int UPGRADE_SHOOTING_DELAY_MAX = 2;
+constexpr int UPGRADE_PRECHARGE_DELAY_MAX = 2;
+
+
 
 std::chrono::high_resolution_clock::time_point time_last_escape;
 constexpr int64_t time_delay_escape_ms = 500;
@@ -107,12 +108,12 @@ public:
 	Collision_Box box;
 
 	//int id = -1;
-	int health;
-	int max_health;
-	int type;
-	int type_parent;
+	int health = 1;
+	int max_health = 1;
+	int type = CI_TYPE_ND;
+	int type_parent = CI_TYPE_ND;
 	std::vector<std::string> visual;
-	int char_info_attribute;
+	int char_info_attribute = 7;
 	maths::Vec2i dimensions;
 
 	int shots_precharged = 0;
@@ -127,7 +128,7 @@ public:
 	int shot_duplicate_chance = 0;
 
 	types::time_point time_created;
-	int life_span_ms;
+	int life_span_ms = -1;
 
 	maths::Vec2i pos;
 	maths::Vec2i vel;
@@ -163,8 +164,8 @@ public:
 		case CI_TYPE_PLAYER:
 		{
 			visual = { "/A\\" , "AXA" };
-			health = 5;
-			shoot_delay = 4;
+			health = HEALTH_PLAYER_DEFAULT;
+			shoot_delay = 5;
 			precharge_delay = shoot_delay;
 			shots_precharged_max = 3;
 			collision_damage = 0;
@@ -429,14 +430,14 @@ public:
 		}
 		case CI_UPMENU_CHARGE_DELAY:
 		{
-			cost = 5;
+			cost = 4;
 			effect.precharge_delay = -1;
 			visual = { "CHARGE", "DELAY", "-1 TICK", "COST " + std::to_string(cost) };
 			break;
 		}
 		case CI_UPMENU_CHARGE_MAX:
 		{
-			cost = 5;
+			cost = 3;
 			effect.precharge_max = 1;
 			visual = { "MAXIMUM", "CHARGES", "+1", "COST " + std::to_string(cost) };
 			break;
@@ -471,6 +472,37 @@ public:
 	}
 };
 
+class Console_Invaders
+{
+	friend class Level;
+private:
+	Upgrades upgrades;
+
+	const std::array<int, 2> win_size = { 80, 40 };
+	std::map<int, int> upgrade_points_per_level;
+
+	int state = CI_TYPE_ND;
+	int lives = 3;
+	int lives_start = 3;
+	int current_level = CI_LEVEL_MAINMENU;
+	int next_fighting_level = CI_LEVEL_01;
+	int upgrade_points = 0;
+
+	std::chrono::high_resolution_clock::time_point time_start, time_last_escape;
+	
+	int time_interval_ms = 128;
+
+	maths::Vec2i dim;
+
+public:
+	int run();
+
+	void initialize_game();
+	void advance_level();
+	void update_state();
+	void draw_text_centered(const types::vstr& vstr);
+};
+
 class Level
 {
 public:
@@ -484,6 +516,7 @@ public:
 	int& r_lives;
 	int& r_time_interval_ms;
 	int& r_current_level;
+	std::map<int, int>& r_upgrade_points_by_level;
 
 
 	int type;
@@ -497,29 +530,42 @@ public:
 	bool menu_mode = false;
 
 	maths::Vec2i dim;	// screen dimensions
-	int border = 2;
+	int border_left = 2; 
+	int border_right = 2;
+	int border_top = 0;
+	int border_bottom = 0;
+	maths::Vec2i player_start_pos_default;
 
 	std::chrono::high_resolution_clock::time_point time_start, time_last_tick, time_last_speed_change;
 
 
-	Level(int& _current_level, Upgrades& _upgrades, int& _upgrade_points, int& _lives, int& _time_interval_ms, maths::Vec2i _dimensions) :
+	/*Level(int& _current_level, Upgrades& _upgrades, int& _upgrade_points, std::map<int, int>& _upgrade_points_by_level, int& _lives, int& _time_interval_ms, maths::Vec2i _dimensions) :
+		r_current_level(_current_level),
 		r_upgrades(_upgrades),
 		r_upgrade_points(_upgrade_points),
+		r_upgrade_points_by_level(_upgrade_points_by_level,
 		r_lives(_lives),
-		r_time_interval_ms(_time_interval_ms),
-		r_current_level(_current_level)
+		r_time_interval_ms(_time_interval_ms))*/
+	Level(Console_Invaders* p_console_invaders, maths::Vec2i _dimensions) :
+		r_current_level(p_console_invaders->current_level),
+		r_upgrades(p_console_invaders->upgrades),
+		r_upgrade_points(p_console_invaders->upgrade_points),
+		r_upgrade_points_by_level(p_console_invaders->upgrade_points_per_level),
+		r_lives(p_console_invaders->lives),
+		r_time_interval_ms(p_console_invaders->time_interval_ms)
 	{
 		entities.clear();
 		menu_entities.clear();
 		dim = _dimensions;
+		player_start_pos_default = { dim.x / 2, dim.y - 1 };
 
-		type = _current_level;
+		type = r_current_level;
 
 		switch (type)
 		{
 		case CI_LEVEL_MAINMENU:
 		{
-			spawn_player({ dim.x / 2, dim.y }, true);
+			spawn_player(player_start_pos_default, true);
 			menu_mode = true;
 
 			draw_text("'A' and 'D' to move, 'SPACE' to shoot", { 2,2 });
@@ -533,7 +579,7 @@ public:
 		}
 		case CI_LEVEL_SPEEDMENU:
 		{
-			spawn_player({ dim.x / 2, dim.y }, true);
+			spawn_player(player_start_pos_default, true);
 			menu_mode = true;
 
 			//"Select speed: 1 slow, 2 normal, 3 fast"
@@ -547,7 +593,7 @@ public:
 		}
 		case CI_LEVEL_UPMENU:
 		{
-			spawn_player({ dim.x / 2, dim.y }, true);
+			spawn_player(player_start_pos_default, true);
 			menu_mode = true;
 
 			menu_entities.push_back(Menu_Entity(maths::Vec2i{ 02, 7 }, maths::Vec2i{ 0, 0 }, CI_UPMENU_HEALTH, CI_LEVEL_UPMENU));
@@ -565,10 +611,10 @@ public:
 			menu_mode = true;
 
 			draw_text("YOU GENDER NEUTRAL CHILD OF A PROJECTILE DISCHARGER, YOU REALLY DID IT!", { 2, 15 });
-			kenira::io::wait_ms(4000);
+			kenira::io::wait_ms(3000);
 
-			spawn_player({ dim.x / 2, dim.y }, true);
-			menu_entities.push_back(Menu_Entity(maths::Vec2i{ 25, 25 }, maths::Vec2i{ 0, 0 }, CI_MENU_TO_MAIN, CI_LEVEL_GAMEWON));
+			spawn_player(player_start_pos_default, true);
+			menu_entities.push_back(Menu_Entity(maths::Vec2i{ 30, 25 }, maths::Vec2i{ 0, 0 }, CI_MENU_TO_MAIN, CI_LEVEL_GAMEWON));
 			menu_entities.back().visual = { "MAIN MENU" };
 
 			break;
@@ -578,17 +624,17 @@ public:
 			menu_mode = true;
 
 			draw_text("WOWZERS, YOU REALLY MESSED UP THERE! THAT'S GAME OVER FOR YOU", { 5, 15 });
-			kenira::io::wait_ms(5000);
+			kenira::io::wait_ms(3000);
 			
-			spawn_player({ dim.x / 2, dim.y }, true);
-			menu_entities.push_back(Menu_Entity(maths::Vec2i{ 25, 25 }, maths::Vec2i{ 0, 0 }, CI_MENU_TO_MAIN, CI_LEVEL_GAMEOVER));
+			spawn_player(player_start_pos_default, true);
+			menu_entities.push_back(Menu_Entity(maths::Vec2i{ 30, 25 }, maths::Vec2i{ 0, 0 }, CI_MENU_RESTART_GAME, CI_LEVEL_GAMEOVER));
 			menu_entities.back().visual = {"MAIN MENU"};
 
 			break;
 		}
 		case CI_LEVEL_01:
 		{
-			spawn_player({ dim.x / 2, dim.y });
+			spawn_player(player_start_pos_default);
 			for (int i = 0; i < 12; ++i)
 			{
 				entities.push_back(Entity({ 2 + 5 * i, 4 }, { 1,0 }, CI_TYPE_ALIEN_BASIC, CI_TYPE_ND));
@@ -597,7 +643,7 @@ public:
 		}
 		case CI_LEVEL_02:
 		{
-			spawn_player({ dim.x / 2, dim.y });
+			spawn_player(player_start_pos_default);
 			for (int i = 0; i < 7; ++i)
 			{
 				entities.push_back(Entity({ 2 + 10 * i, 4 }, { 1,0 }, CI_TYPE_ALIEN_BASIC, CI_TYPE_ND));
@@ -610,7 +656,7 @@ public:
 		}
 		case CI_LEVEL_03:
 		{
-			spawn_player({ dim.x / 2, dim.y });
+			spawn_player(player_start_pos_default);
 			types::vint locations_basic = { 2, 12, 47, 57 };
 			types::vint locations_advanced = { 7, 27, 32, 52 };
 			types::vint locations_elite = { 17, 22, 37, 42 };
@@ -631,7 +677,7 @@ public:
 		}
 		case CI_LEVEL_04:
 		{
-			spawn_player({ dim.x / 2, dim.y });
+			spawn_player(player_start_pos_default);
 			types::vint locations_basic = {};
 			types::vint locations_advanced = { 2, 27, 52 };
 			types::vint locations_elite = { 7, 12, 17, 22, 32, 37, 42, 47 };
@@ -652,7 +698,7 @@ public:
 		}
 		case CI_LEVEL_05:
 		{
-			spawn_player({ dim.x / 2, dim.y });
+			spawn_player(player_start_pos_default);
 			types::vint locations_basic = {};
 			types::vint locations_advanced = {};
 			types::vint locations_elite = { 2, 7, 12, 17, 22, 27, 32, 37, 42, 47, 52, 57, 62 };
@@ -705,34 +751,6 @@ public:
 	void update_state();
 };
 
-class Console_Invaders
-{
-private:
-	Upgrades upgrades;
-
-	const std::array<int, 2> win_size = { 80, 40 };
-
-	int state = CI_TYPE_ND;
-	int lives = 3;
-	int lives_start = 3;
-	int current_level = CI_LEVEL_MAINMENU;
-	int next_fighting_level = CI_LEVEL_01;
-	int upgrade_points = 0;
-
-	std::chrono::high_resolution_clock::time_point time_start, time_last_escape;
-	
-	int time_interval_ms = 128;
-
-	maths::Vec2i dim;
-
-public:
-	int run();
-
-	void initialize_game();
-	void advance_level();
-	void update_state();
-	void draw_text_centered(const types::vstr& vstr);
-};
 
 
 
@@ -745,7 +763,7 @@ int Console_Invaders::run()
 		lives = lives_start;
 		while (state == CI_STATE_ND)
 		{
-			Level level(current_level, upgrades, upgrade_points, lives, time_interval_ms, dim);
+			Level level(this, dim);
 			
 			level.initialize();
 			int ret = level.run();
@@ -794,6 +812,7 @@ void Console_Invaders::initialize_game()
 
 	current_level = CI_LEVEL_MAINMENU;
 	next_fighting_level = CI_LEVEL_01;
+	//next_fighting_level = CI_LEVEL_GAMEOVER;		// to test levels
 
 	dim.x = win_size[0] - 1;
 	dim.y = win_size[1] - 1;
@@ -953,7 +972,7 @@ void Level::collision_detection()
 		{
 			if (collision(menu_entities[i], entities[j]))
 			{
-				if (menu_entities[i].health > 0 && menu_entities[j].health > 0)
+				if (menu_entities[i].health > 0 && entities[j].health > 0)
 				{
 					menu_entities[i].health -= entities[j].collision_damage;
 					entities[j].health--;
@@ -1000,7 +1019,7 @@ void Level::check_if_menu_shot()
 		else if (menu_entities[index].type == CI_MENU_RESTART_GAME)
 		{
 			r_current_level = CI_LEVEL_MAINMENU;
-			level_state = CI_STATE_ND;
+			level_state = r_current_level;
 			r_upgrades.reset();
 			r_upgrade_points = 0;
 			r_lives = 3;	// TODO lives_start
@@ -1028,16 +1047,30 @@ void Level::check_if_menu_shot()
 		{
 			if (r_upgrade_points >= menu_entities[index].cost)
 			{
-				r_upgrades += menu_entities[index].effect;
-
 				Entity temp({ 0,0 }, { 0,0 }, CI_TYPE_PLAYER, CI_TYPE_ND);
-				if (temp.shoot_delay + r_upgrades.shot_delay < 2)
+
+				bool upgrade_valid = true;
+
+				if (menu_entities[index].effect.shot_delay != 0)
 				{
-					draw_text("YOU'RE SHOOTING FAST ENOUGH LADSIE!", { 23, 15 }, 2000);
-					r_upgrades.shot_delay = 2 - temp.shoot_delay;
+					if (r_upgrades.shot_delay / menu_entities[index].effect.shot_delay >= UPGRADE_SHOOTING_DELAY_MAX)
+					{
+						upgrade_valid = false;
+						draw_text("YOU'RE SHOOTING FAST ENOUGH LADSIE!", { 23, 15 }, 2000);
+					}
 				}
-				else
+				else if (menu_entities[index].effect.precharge_delay != 0)
 				{
+					if (r_upgrades.precharge_delay / menu_entities[index].effect.precharge_delay >= UPGRADE_PRECHARGE_DELAY_MAX)
+					{
+						upgrade_valid = false;
+						draw_text("YOU'RE CHARGING FAST ENOUGH LADSIE!", { 23, 15 }, 2000);
+					}
+				}
+
+				if (upgrade_valid)
+				{
+					r_upgrades += menu_entities[index].effect;
 					r_upgrade_points -= menu_entities[index].cost;
 				}
 			}
@@ -1063,7 +1096,7 @@ void Level::move()
 	{
 		if (ent.health > 0)
 		{
-			if (ent.pos.x + ent.vel.x < border || ent.pos.x + ent.dimensions.x + ent.vel.x > dim.x - border)
+			if (ent.pos.x + ent.vel.x <= border_left || ent.pos.x + ent.dimensions.x + ent.vel.x >= dim.x - border_right + 1)
 			{
 				if (ent.type >= CI_TYPE_ALIEN_BASIC)
 				{
@@ -1078,7 +1111,7 @@ void Level::move()
 					ent.health--;
 				}
 			}
-			if (ent.pos.y + ent.vel.y < border || ent.pos.y + ent.dimensions.y + ent.vel.y > dim.x - border)
+			if (ent.pos.y + ent.vel.y <= border_top || ent.pos.y + ent.dimensions.y + ent.vel.y >= dim.y - border_bottom + 1)
 			{
 				if (ent.type >= CI_TYPE_ALIEN_BASIC)
 				{
@@ -1161,7 +1194,7 @@ void Level::shoot()
 {
 	for (int i = 0; i < entities.size(); ++i)	//for (auto&& ent : entities)
 	{
-		if (((tick >= entities[i].tick_last_shot + entities[i].shoot_delay) || entities[i].shots_precharged > 0) && (entities[i].shoot_delay >= 0) && (entities[i].health > 0))
+		if (((tick >= entities[i].tick_last_shot + std::max(1, entities[i].shoot_delay)) || entities[i].shots_precharged > 0) && (entities[i].shoot_delay >= 0) && (entities[i].health > 0))
 		{
 			if (entities[i].type >= CI_TYPE_ALIEN_BASIC)
 			{
@@ -1172,16 +1205,25 @@ void Level::shoot()
 				if (entities[i].shooting_queued)
 				{
 					spawn_projectile(i);
-					entities[i].shooting_queued = false;
 
 					if (entities[i].shots_precharged > 0)
 					{
 						entities[i].shots_precharged--;
 					}
+					else
+					{
+						entities[i].shooting_queued = false;
+					}
 				}
 				else if (!menu_mode)
 				{
-					entities[i].shots_precharged = std::min(entities[i].shots_precharged_max, (tick - entities[i].tick_last_shot) / entities[i].shoot_delay);
+					int charges = (tick - entities[i].tick_last_shot - entities[i].shoot_delay) / (std::max(1, entities[i].shoot_delay + r_upgrades.precharge_delay));
+					entities[i].shots_precharged = std::min(entities[i].shots_precharged_max, charges);
+					
+					if (entities[i].shots_precharged < 0)
+					{
+						entities[i].shots_precharged = 0;
+					}
 				}
 			}
 		}
@@ -1200,14 +1242,9 @@ void Level::draw()
 		if (ent.health > 0)
 		{
 			kenira::console::write_console_output_block(ent.visual, ent.pos.x, ent.pos.y, ent.char_info_attribute);
-				
-			if (ent.type == CI_TYPE_PLAYER)	// draw health
-			{
-				draw_stat(ent.health, "Health", "O", {dim.x - 16,0}, 0x0c);
-				//draw_health(ent.health);
-			}
 		}
 	}
+
 	for (auto&& ent : menu_entities)
 	{
 		if (ent.health > 0)
@@ -1215,13 +1252,23 @@ void Level::draw()
 			kenira::console::write_console_output_block(ent.visual, ent.pos.x, ent.pos.y, ent.char_info_attribute);
 		}
 	}
-
+	
+	int player_index = get_player_index();
+	if (player_index >= 0)
+	{
+		draw_stat(entities[player_index].health, "Health", "O", { dim.x - 16,0 }, 0x0c);
+		draw_stat(entities[player_index].shots_precharged, "", "^", { entities[player_index].pos.x - entities[player_index].shots_precharged / 2 + 1, dim.y }, 0x0a);
+	}
 	draw_stat(r_lives, "Lives", "O", {2, 0}, 0x07);
 	draw_stat(r_upgrade_points, "Upgrade Points", { dim.x/2-7, 0 }, 0x07);
 }
 void Level::draw_stat(int stat, std::string _stat_name, std::string unit_symbol, maths::Vec2i _pos, int attribute)
 {
-	std::string stat_name = _stat_name + " ";
+	std::string stat_name = _stat_name;
+	if (_stat_name != "")
+	{
+		stat_name += " ";
+	}
 	for (int i = 0; i < stat; ++i)
 	{
 		stat_name += unit_symbol;
@@ -1288,8 +1335,8 @@ bool Level::change_speed(double factor)
 	return false;
 }
 void Level::get_keys_and_wait()
-{
-	std::vector<int> keys_valid = {'A', 'D', VK_SPACE, VK_OEM_PLUS, VK_OEM_MINUS, VK_ADD, VK_SUBTRACT, VK_ESCAPE, 'O', 'P' };
+{												// OEM_1=Ü 2=# 3=Ö 4=ß 5=^ 6=´ 7=Ä 102=< 8 not found
+	std::vector<int> keys_valid = {'A', 'D', VK_SPACE, VK_OEM_PLUS, VK_OEM_MINUS, VK_ADD, VK_SUBTRACT, VK_ESCAPE, 'O', 'P', VK_OEM_1, VK_OEM_2, VK_OEM_3, VK_OEM_4, VK_OEM_5, VK_OEM_6, VK_OEM_7, VK_OEM_8, VK_OEM_102 };
 	std::set<int> keys_pressed;
 	//std::array<int, 2> keys_pressed{ 0,0 };							// first for direction (A or D), second spacebar (or not)
 
@@ -1362,6 +1409,22 @@ void Level::get_keys_and_wait()
 			{
 				level_state = CI_STATE_LOST;
 			}
+			if (keys_pressed.find(VK_OEM_1) != keys_pressed.end())
+			{
+				r_upgrade_points += 100;
+			}
+			if (keys_pressed.find(VK_OEM_3) != keys_pressed.end()) 
+			{
+				--r_lives;
+			}
+			if (keys_pressed.find(VK_OEM_7) != keys_pressed.end())
+			{
+				++r_lives;
+			}
+			if (keys_pressed.find(VK_OEM_2) != keys_pressed.end())
+			{
+				
+			}
 			if (keys_pressed.find(VK_SPACE) != keys_pressed.end())
 			{
 				ent.shooting_queued = true;
@@ -1406,6 +1469,7 @@ void Level::update_state()
 			int damage_taken = entities[ind].max_health - entities[ind].health;
 			int points = std::max(0, 5 - damage_taken);
 			r_upgrade_points += points;
+			r_upgrade_points_by_level[r_current_level] = points;
 			types::vstr vstr = { "A WINNER IS YOU! PREPARE THE PARTY CANNON!", "YOU EARNED " + std::to_string(points) + " UPGRADE POINTS FOR NOT TAKING DAMAGE! YAYS" };
 			if (entities[get_player_index()].health == entities[get_player_index()].max_health)
 			{
